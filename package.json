@@ -1,0 +1,33 @@
+{
+  "name": "basketsaver",
+  "version": "1.0.0",
+  "description": "A simple web tool that helps you find the cheapest supermarket for your weekly shopping list.",
+  "main": "app.js",
+  "scripts": {
+    "test": "node scrapeToSupabase.js",
+    "scrape:quick": "node scrapeCategories.js quick",
+    "scrape:full": "node scrapeCategories.js full",
+    "scrape:asda": "node scrapeCategories.js asda",
+    "scrape:morrisons": "node scrapeCategories.js morrisons",
+    "scrape:tesco": "node scrapeCategories.js tesco",
+    "scrape:sainsburys": "node scrapeCategories.js sainsburys",
+    "scrape:aldi": "node scrapeCategories.js aldi",
+    "scrape:lidl": "node scrapeCategories.js lidl",
+    "scrape:waitrose": "node scrapeCategories.js waitrose",
+    "scrape:ocado": "node scrapeCategories.js ocado",
+    "scrape:daily": "node dailyScrape.js",
+    "normalize": "node normalizeProducts.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.75.1",
+    "dotenv": "^17.2.3",
+    "puppeteer": "^24.25.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "xlsx": "^0.18.5"
+  }
+}
