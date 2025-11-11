@@ -351,7 +351,8 @@ async function scrapeAsda(maxProductsPerCategory = 999999) {
         console.log(`Recovering... reopening browser\n`);
 
         const newBrowser = await puppeteer.launch({
-          headless: 'new',
+          executablePath: '/usr/bin/chromium-browser',
+	headless: 'new',
           args: stealthArgs
         });
 
