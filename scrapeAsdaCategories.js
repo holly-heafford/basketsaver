@@ -209,7 +209,17 @@ async function scrapeAsda(maxProductsPerCategory = 999999) {
     browser = await puppeteer.launch({
 	executablePath: '/usr/bin/chromium-browser',
       headless: 'new',
-      args: stealthArgs
+      args: [
+	    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-blink-features=AutomationControlled',
+    '--disable-dev-shm-usage',
+    '--disable-web-security',
+    '--disable-features=IsolateOrigins,site-per-process',
+    '--disable-gpu',
+    '--window-size=1920,1080',
+    '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  ]
     });
 
     page = await browser.newPage();
@@ -353,7 +363,17 @@ async function scrapeAsda(maxProductsPerCategory = 999999) {
         const newBrowser = await puppeteer.launch({
           executablePath: '/usr/bin/chromium-browser',
 	headless: 'new',
-          args: stealthArgs
+          args: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-blink-features=AutomationControlled',
+    '--disable-dev-shm-usage',
+    '--disable-web-security',
+    '--disable-features=IsolateOrigins,site-per-process',
+    '--disable-gpu',
+    '--window-size=1920,1080',
+    '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  ]
         });
 
         page = await newBrowser.newPage();
