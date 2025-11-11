@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { upsertProduct } = require('./scrapeToSupabase.js');
+const { upsertProduct } = require('./supabase-utils.js');
 const { scrapeSupermarket, SUPERMARKET_SELECTORS } = require('./scraper-stealth-template.js');
 const { addToPopularItemsIfMatches } = require('./add-to-popular-items.js');
 const stealth = require('./stealth.js');
@@ -205,7 +205,8 @@ async function scrapeTescoCategories() {
   console.log('🎯 Categories reordered by priority for popular items detection:');
 
   const browser = await puppeteer.launch({
-    headless: 'new',
+    executablePath: '/usr/bin/chromium-browser',
+	headless: 'new',
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
