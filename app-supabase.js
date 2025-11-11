@@ -72,16 +72,39 @@ async function loadInitialData() {
 
         console.log(`Loaded ${supermarkets.length} supermarkets`);
 
-        // Load products with their current prices
-        const { data: products, error: productsError } = await supabase
-            .from('products')
-            .select('*')
-            .order('name');
+        // Load ALL products with their current prices (no limit)
+        // Fetch in batches to handle large datasets
+        let allProducts = [];
+        let from = 0;
+        const batchSize = 1000;
+        let hasMore = true;
 
-        if (productsError) throw productsError;
+        while (hasMore) {
+            const { data: products, error: productsError } = await supabase
+                .from('products')
+                .select(`
+                    *,
+                    categories (
+                        id,
+                        name
+                    )
+                `)
+                .order('name')
+                .range(from, from + batchSize - 1);
 
-        productsCache = products;
-        console.log(`Loaded ${products.length} products`);
+            if (productsError) throw productsError;
+
+            if (products && products.length > 0) {
+                allProducts = allProducts.concat(products);
+                from += batchSize;
+                hasMore = products.length === batchSize;
+            } else {
+                hasMore = false;
+            }
+        }
+
+        productsCache = allProducts;
+        console.log(`Loaded ${allProducts.length} products from all supermarkets`);
 
     } catch (error) {
         console.error('Error loading initial data:', error);
@@ -100,18 +123,37 @@ function getAvailableItems() {
     return Array.from(uniqueNames).sort();
 }
 
-// Search products by normalized name
+// Search products by normalized name with smart token-based matching
 async function searchProducts(searchTerm) {
     try {
+        // First try exact substring match from database (fast)
         const { data, error } = await supabase
             .from('products')
             .select('*')
             .ilike('normalized_name', `%${searchTerm}%`)
             .order('normalized_name')
-            .limit(20);
+            .limit(50); // Fetch more to allow for token filtering
 
         if (error) throw error;
-        return data;
+
+        // If we got results from exact match, use them
+        if (data && data.length > 0) {
+            return data.slice(0, 20);
+        }
+
+        // If no exact matches, try token-based matching from cache
+        // This helps find "coca cola 24x330ml" even if database has "coca cola taste 24x330ml"
+        const searchTokens = searchTerm.toLowerCase().split(/\s+/).filter(t => t.length > 0);
+
+        const tokenMatches = productsCache.filter(p => {
+            if (!p.normalized_name) return false;
+            const normalizedLower = p.normalized_name.toLowerCase();
+
+            // All search tokens must be present
+            return searchTokens.every(token => normalizedLower.includes(token));
+        });
+
+        return tokenMatches.slice(0, 20);
     } catch (error) {
         console.error('Error searching products:', error);
         return [];
@@ -131,7 +173,17 @@ function addItem() {
         return;
     }
 
-    shoppingList.push({ name, quantity });
+    // Check if item already exists in the list
+    const existingItemIndex = shoppingList.findIndex(item => item.name === name);
+
+    if (existingItemIndex !== -1) {
+        // Item exists - increment quantity
+        shoppingList[existingItemIndex].quantity += quantity;
+    } else {
+        // New item - add to list
+        shoppingList.push({ name, quantity });
+    }
+
     nameInput.value = '';
     quantityInput.value = '1';
     nameInput.focus();
@@ -262,14 +314,156 @@ const CATEGORY_MAP = {
     'pet': { category: 'Pet Food', emoji: '🐾' },
 };
 
-// Categorize an item based on its name
-function categorizeItem(itemName) {
+// Get category from database by matching products in cache
+function getCategoryFromDatabase(itemName) {
     const nameLower = itemName.toLowerCase();
 
-    for (const [keyword, data] of Object.entries(CATEGORY_MAP)) {
-        if (nameLower.includes(keyword)) {
-            return data;
-        }
+    // Find matching products from the cache
+    const matchingProducts = productsCache.filter(p => {
+        if (!p.normalized_name) return false;
+        const normalizedLower = p.normalized_name.toLowerCase();
+        return normalizedLower === nameLower || normalizedLower.includes(nameLower) || nameLower.includes(normalizedLower);
+    });
+
+    // Get all categories from matching products
+    const categories = matchingProducts
+        .map(p => p.categories?.name)
+        .filter(cat => cat != null);
+
+    if (categories.length === 0) return null;
+
+    // Return the most common category
+    const categoryCounts = {};
+    categories.forEach(cat => {
+        categoryCounts[cat] = (categoryCounts[cat] || 0) + 1;
+    });
+
+    const mostCommonCategory = Object.entries(categoryCounts)
+        .sort((a, b) => b[1] - a[1])[0][0];
+
+    return mostCommonCategory;
+}
+
+// Categorize an item based on its name
+function categorizeItem(itemName) {
+    // First, try to get category from database
+    const dbCategory = getCategoryFromDatabase(itemName);
+    if (dbCategory) {
+        // Map database category to emoji
+        const categoryEmojiMap = {
+            'Fruit & Vegetables': '🥗',
+            'Meat & Fish': '🍗',
+            'Bakery': '🍞',
+            'Dairy & Eggs': '🥛',
+            'Frozen': '🧊',
+            'Cupboard': '🥫',
+            'Drinks': '🥤',
+            'Snacks & Treats': '🍫',
+            'Health & Beauty': '🧴',
+            'Household': '🧹',
+            'Baby & Toddler': '👶',
+            'Pet Food': '🐾'
+        };
+
+        return {
+            category: dbCategory,
+            emoji: categoryEmojiMap[dbCategory] || '🛒'
+        };
+    }
+
+    // Fallback to keyword-based categorization
+    const nameLower = itemName.toLowerCase();
+
+    // Priority 1: Check for explicit snack/treat indicators first
+    const snackIndicators = ['chocolate', 'candy', 'sweet', 'biscuit', 'cookie', 'crisp', 'chip', 'dessert', 'snack', 'treat', 'chew'];
+    if (snackIndicators.some(indicator => nameLower.includes(indicator))) {
+        return { category: 'Snacks & Treats', emoji: '🍫' };
+    }
+
+    // Priority 2: Check for bakery items
+    const bakeryIndicators = ['bread', 'roll', 'bagel', 'croissant', 'cake', 'muffin', 'bun'];
+    if (bakeryIndicators.some(indicator => nameLower.includes(indicator))) {
+        return { category: 'Bakery', emoji: '🍞' };
+    }
+
+    // Priority 3: Check for dairy (but not if it's part of a brand name like "Dairy Milk")
+    // Only match if "milk", "cheese", "butter", "yogurt", "cream", "dairy" appear as standalone products
+    if (nameLower.includes('cheese') && !nameLower.includes('chocolate')) {
+        return { category: 'Dairy & Eggs', emoji: '🧀' };
+    }
+    if (nameLower.includes('butter') && !nameLower.includes('peanut')) {
+        return { category: 'Dairy & Eggs', emoji: '🧈' };
+    }
+    if (nameLower.includes('yogurt') || nameLower.includes('yoghurt')) {
+        return { category: 'Dairy & Eggs', emoji: '🥛' };
+    }
+    if (nameLower.includes('cream') && !nameLower.includes('ice cream')) {
+        return { category: 'Dairy & Eggs', emoji: '🥛' };
+    }
+    if (nameLower.includes('egg')) {
+        return { category: 'Dairy & Eggs', emoji: '🥚' };
+    }
+    // Only categorize as dairy if "milk" appears but NOT with chocolate/cadbury
+    if (nameLower.includes('milk') && !nameLower.includes('chocolate') && !nameLower.includes('cadbury')) {
+        return { category: 'Dairy & Eggs', emoji: '🥛' };
+    }
+
+    // Priority 4: Check for drinks
+    const drinkIndicators = ['juice', 'coffee', 'tea', 'water', 'cola', 'coke', 'drink', 'squash', 'lemonade', 'beer', 'wine'];
+    if (drinkIndicators.some(indicator => nameLower.includes(indicator))) {
+        return { category: 'Drinks', emoji: '🥤' };
+    }
+
+    // Priority 5: Check for meat & fish
+    const meatIndicators = ['chicken', 'beef', 'pork', 'bacon', 'sausage', 'fish', 'salmon', 'lamb', 'turkey', 'ham', 'meat', 'hot dog'];
+    if (meatIndicators.some(indicator => nameLower.includes(indicator))) {
+        return { category: 'Meat & Fish', emoji: '🍗' };
+    }
+
+    // Priority 6: Check for frozen
+    if (nameLower.includes('frozen') || nameLower.includes('ice cream') || nameLower.includes('pizza')) {
+        return { category: 'Frozen', emoji: '🧊' };
+    }
+
+    // Priority 7: Check for cupboard items
+    const cupboardIndicators = ['pasta', 'rice', 'flour', 'sugar', 'salt', 'oil', 'sauce', 'beans', 'tin', 'jar', 'cereal', 'oats', 'porridge', 'peanut butter', 'jam', 'honey', 'spread'];
+    if (cupboardIndicators.some(indicator => nameLower.includes(indicator))) {
+        return { category: 'Cupboard', emoji: '🥫' };
+    }
+
+    // Priority 8: Check for fresh produce (only if not already categorized as snacks)
+    const produceIndicators = ['apple', 'banana', 'tomato', 'potato', 'onion', 'carrot', 'lettuce', 'broccoli', 'orange', 'pepper', 'cucumber', 'mushroom', 'salad'];
+    if (produceIndicators.some(indicator => nameLower.includes(indicator))) {
+        return { category: 'Fruit & Vegetables', emoji: '🥗' };
+    }
+
+    // Priority 9: Check for health & beauty
+    const healthBeautyIndicators = ['shampoo', 'soap', 'toothpaste', 'deodorant'];
+    if (healthBeautyIndicators.some(indicator => nameLower.includes(indicator))) {
+        return { category: 'Health & Beauty', emoji: '🧴' };
+    }
+
+    // Priority 10: Check for household
+    const householdIndicators = ['detergent', 'cleaner', 'toilet', 'paper', 'bag'];
+    if (householdIndicators.some(indicator => nameLower.includes(indicator))) {
+        return { category: 'Household', emoji: '🧹' };
+    }
+
+    // Priority 11: Check for baby & toddler
+    const babyIndicators = ['baby', 'nappy', 'diaper', 'wipes'];
+    if (babyIndicators.some(indicator => nameLower.includes(indicator))) {
+        return { category: 'Baby & Toddler', emoji: '👶' };
+    }
+
+    // Priority 12: Check for pet food
+    // Be specific to avoid false matches like "hot dog"
+    if (nameLower.includes('dog food') ||
+        nameLower.includes('cat food') ||
+        nameLower.includes('pet food') ||
+        nameLower.includes('dog treat') ||
+        nameLower.includes('cat treat') ||
+        (nameLower.includes('pet') && !nameLower.includes('carpet'))) {
+        return { category: 'Pet Food', emoji: '🐾' };
     }
 
     return { category: 'Other', emoji: '🛒' };
@@ -357,6 +551,42 @@ function updateQuantity(index, newQuantity) {
     renderShoppingList();
 }
 
+// Extract pack size from product name (e.g., "4x415g", "24x330ml", "6 pack")
+function extractPackSize(productName) {
+    const name = productName.toLowerCase();
+
+    // Pattern 1: "4x415g", "24x330ml" format
+    const multipackPattern = /(\d+)x(\d+)(ml|g|l|kg)/;
+    const multipackMatch = name.match(multipackPattern);
+    if (multipackMatch) {
+        return {
+            quantity: parseInt(multipackMatch[1]),
+            unit: multipackMatch[2] + multipackMatch[3]
+        };
+    }
+
+    // Pattern 2: "6 pack", "4 pack" format
+    const packPattern = /(\d+)\s*pack/;
+    const packMatch = name.match(packPattern);
+    if (packMatch) {
+        return {
+            quantity: parseInt(packMatch[1]),
+            unit: 'pack'
+        };
+    }
+
+    // No pack size found - likely a single item
+    return null;
+}
+
+// Normalize product name for fuzzy matching (handle spelling variations)
+function normalizeForMatching(text) {
+    return text.toLowerCase()
+        .replace(/beanz/g, 'beans')  // Heinz uses "beanz" instead of "beans"
+        .replace(/lite/g, 'light')   // UK/US spelling variations
+        .replace(/flavour/g, 'flavor');
+}
+
 // Compare prices across supermarkets using Supabase data
 async function compareBaskets() {
     if (shoppingList.length === 0) {
@@ -368,14 +598,8 @@ async function compareBaskets() {
     resultsContainer.innerHTML = '<div class="results-placeholder"><div class="results-placeholder-icon">⏳</div><div>Loading prices...</div></div>';
 
     try {
-        // Get all products that match the shopping list items
-        const itemNames = shoppingList.map(item => item.name.toLowerCase());
-
-        const { data: products, error } = await supabase
-            .from('products')
-            .select('*');
-
-        if (error) throw error;
+        // Use cached products instead of fetching again (faster and includes all products)
+        const products = productsCache;
 
         // Group products by supermarket
         const supermarketData = {};
@@ -396,13 +620,63 @@ async function compareBaskets() {
         shoppingList.forEach(listItem => {
             const itemName = listItem.name.toLowerCase();
 
+            // Tokenize search term for better matching
+            const searchTokens = itemName.split(/\s+/).filter(t => t.length > 0);
+
+            // Extract pack size from search term (e.g., "4x415g", "24x330ml", "6 pack")
+            const searchPackSize = extractPackSize(itemName);
+
             // Find all products matching this item name across all supermarkets using normalized_name
-            const matchingProducts = products.filter(p =>
-                p.normalized_name && (
-                    p.normalized_name.toLowerCase().includes(itemName) ||
-                    itemName.includes(p.normalized_name.toLowerCase())
-                )
-            );
+            const matchingProducts = products.filter(p => {
+                if (!p.normalized_name) return false;
+
+                const normalizedLower = p.normalized_name.toLowerCase();
+
+                // Apply fuzzy normalization for spelling variations
+                const normalizedSearch = normalizeForMatching(itemName);
+                const normalizedProduct = normalizeForMatching(normalizedLower);
+
+                // Method 1: Exact substring match (fastest, most precise)
+                if (normalizedProduct.includes(normalizedSearch) || normalizedSearch.includes(normalizedProduct)) {
+                    return true;
+                }
+
+                // Method 2: Token-based matching with fuzzy normalization
+                // This allows "coca cola 24x330ml" to match "coca cola taste 24x330ml"
+                // and "heinz beans" to match "heinz beanz"
+                const normalizedSearchTokens = normalizedSearch.split(/\s+/).filter(t => t.length > 0);
+
+                // Filter out common optional words that don't affect product identity
+                const optionalWords = ['baked', 'in', 'with', 'original', 'classic', 'fresh'];
+                const requiredSearchTokens = normalizedSearchTokens.filter(token =>
+                    !optionalWords.includes(token) && token.length > 2
+                );
+
+                // At least the core tokens must be present
+                const coreTokensPresent = requiredSearchTokens.every(token =>
+                    normalizedProduct.includes(token)
+                );
+
+                if (!coreTokensPresent) {
+                    return false;
+                }
+
+                // Method 3: Pack size validation
+                // If search has a pack size, product must have compatible pack size
+                const productPackSize = extractPackSize(normalizedLower);
+
+                if (searchPackSize && productPackSize) {
+                    // Both have pack sizes - they must match
+                    return searchPackSize.quantity === productPackSize.quantity &&
+                           searchPackSize.unit === productPackSize.unit;
+                } else if (!searchPackSize && productPackSize) {
+                    // Search is for single item, product is a multipack - don't match
+                    return false;
+                } else {
+                    // Either both are singles or search doesn't specify pack - allow match
+                    return true;
+                }
+            });
 
             if (matchingProducts.length === 0) {
                 unavailableItems.push(listItem.name);
@@ -640,8 +914,18 @@ function initAutocomplete() {
 
             itemDiv.addEventListener('click', function() {
                 const itemName = this.getElementsByTagName('input')[0].value;
-                // Add item directly to shopping list
-                shoppingList.push({ name: itemName, quantity: 1 });
+
+                // Check if item already exists in the list
+                const existingItemIndex = shoppingList.findIndex(item => item.name === itemName);
+
+                if (existingItemIndex !== -1) {
+                    // Item exists - increment quantity
+                    shoppingList[existingItemIndex].quantity += 1;
+                } else {
+                    // New item - add to list
+                    shoppingList.push({ name: itemName, quantity: 1 });
+                }
+
                 saveToLocalStorage();
                 renderShoppingList();
                 // Clear input and close autocomplete
@@ -819,6 +1103,311 @@ function importShoppingList() {
     };
 
     input.click();
+}
+
+// Popular Items functionality
+const POPULAR_ITEMS = [
+    { name: '4 Pints Semi Skimmed Milk', searchTerms: ['4pint', 'semi skimmed', 'milk', '2.272l', '2pint'] },
+    { name: 'Baked Beans', searchTerms: ['baked', 'beans', 'bean'] },
+    { name: 'White Bread', searchTerms: ['white', 'bread', 'loaf'] },
+    { name: 'Eggs 6 Pack', searchTerms: ['eggs', '6', 'medium'] },
+    { name: 'Cheddar Cheese', searchTerms: ['cheddar', 'cheese'] },
+    { name: 'Pasta', searchTerms: ['pasta', 'spaghetti', 'penne'] },
+    { name: 'Minced Beef', searchTerms: ['mince', 'beef', 'minced beef'] },
+    { name: 'Bananas', searchTerms: ['banana'] },
+    { name: 'Apples', searchTerms: ['apple'] },
+    { name: 'Chicken Pieces', searchTerms: ['chicken', 'breast', 'fillet'] }
+];
+
+function findBestMatch(itemSearchTerms, supermarketId) {
+    const supermarketProducts = productsCache.filter(p => p.supermarket_id === supermarketId && p.is_available && p.current_price);
+
+    // First, score all products
+    const scoredProducts = [];
+
+    for (const product of supermarketProducts) {
+        const nameToSearch = (product.normalized_name || product.name).toLowerCase();
+        let score = 0;
+
+        for (const term of itemSearchTerms) {
+            if (nameToSearch.includes(term.toLowerCase())) {
+                score++;
+            }
+        }
+
+        if (score > 0) {
+            scoredProducts.push({ product, score });
+        }
+    }
+
+    if (scoredProducts.length === 0) {
+        return null;
+    }
+
+    // Find the highest score
+    const maxScore = Math.max(...scoredProducts.map(sp => sp.score));
+
+    // Filter to only products with the highest score
+    const bestMatches = scoredProducts.filter(sp => sp.score === maxScore);
+
+    // Among the best matches, return the cheapest one
+    const cheapestMatch = bestMatches.reduce((min, current) => {
+        const minPrice = parseFloat(min.product.current_price);
+        const currentPrice = parseFloat(current.product.current_price);
+        return currentPrice < minPrice ? current : min;
+    });
+
+    return cheapestMatch.product;
+}
+
+async function showPopularItems() {
+    const popularItemsSection = document.getElementById('popularItemsSection');
+    const shoppingListSection = document.querySelector('.shopping-list-section');
+    const resultsSection = document.getElementById('resultsSection');
+    const searchSection = document.querySelector('.search-section');
+
+    // Hide other sections
+    if (shoppingListSection) shoppingListSection.style.display = 'none';
+    if (resultsSection) resultsSection.style.display = 'none';
+    if (searchSection) searchSection.style.display = 'none';
+
+    // Show popular items section
+    popularItemsSection.style.display = 'block';
+
+    // Scroll to top
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    // Load and display data
+    await loadPopularItemsData();
+}
+
+function hidePopularItems() {
+    const popularItemsSection = document.getElementById('popularItemsSection');
+    const shoppingListSection = document.querySelector('.shopping-list-section');
+    const searchSection = document.querySelector('.search-section');
+
+    // Hide popular items
+    popularItemsSection.style.display = 'none';
+
+    // Show other sections
+    if (shoppingListSection) shoppingListSection.style.display = 'block';
+    if (searchSection) searchSection.style.display = 'block';
+
+    // Scroll to top
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+async function loadPopularItemsData() {
+    const grid = document.getElementById('popularItemsGrid');
+    const summary = document.getElementById('popularItemsSummary');
+    const loading = document.getElementById('popularItemsLoading');
+    const content = document.getElementById('popularItemsContent');
+
+    loading.style.display = 'block';
+    content.style.display = 'none';
+
+    try {
+        // Fetch popular items with denormalized product data (no joins needed!)
+        const { data: popularItems, error: itemsError } = await supabase
+            .from('popular_items')
+            .select(`
+                id,
+                name,
+                display_name,
+                description,
+                popular_item_products (
+                    id,
+                    name,
+                    current_price,
+                    price_per_unit,
+                    image_url,
+                    product_url,
+                    is_featured,
+                    supermarkets!inner (
+                        id,
+                        name
+                    )
+                )
+            `)
+            .eq('is_active', true)
+            .order('display_order');
+
+        if (itemsError) throw itemsError;
+
+        const supermarketTotals = {};
+        let itemsHtml = '';
+
+        // Create a horizontal carousel for each popular item
+        for (let itemIndex = 0; itemIndex < popularItems.length; itemIndex++) {
+            const item = popularItems[itemIndex];
+
+            // Extract products from denormalized junction table (no products join needed!)
+            const productsForItem = item.popular_item_products.map(mapping => ({
+                supermarket: mapping.supermarkets.name,
+                supermarketId: mapping.supermarkets.id,
+                product: {
+                    name: mapping.name,
+                    current_price: mapping.current_price,
+                    image_url: mapping.image_url,
+                    product_url: mapping.product_url
+                },
+                price: parseFloat(mapping.current_price),
+                isFeatured: mapping.is_featured
+            }));
+
+            // Calculate totals
+            productsForItem.forEach(p => {
+                if (!supermarketTotals[p.supermarket]) {
+                    supermarketTotals[p.supermarket] = 0;
+                }
+                supermarketTotals[p.supermarket] += p.price;
+            });
+
+            // Sort by price (cheapest first)
+            productsForItem.sort((a, b) => a.price - b.price);
+            const cheapestPrice = productsForItem.length > 0 ? productsForItem[0].price : null;
+
+        // Create item card with horizontal carousel
+        let itemHtml = `
+            <div style="background: var(--bg-white); border-radius: var(--radius-xl); padding: 24px; box-shadow: var(--shadow-md); border: 2px solid var(--border-light);">
+                <h3 style="margin-bottom: 20px; font-size: 20px; font-weight: 700; color: var(--text-primary);">${item.display_name || item.name}</h3>
+                <div style="position: relative;">
+                    <div id="carousel-${itemIndex}" style="overflow-x: auto; scroll-behavior: smooth; -webkit-overflow-scrolling: touch; scrollbar-width: none; -ms-overflow-style: none;">
+                        <div style="display: flex; gap: 16px; padding-bottom: 10px;">
+        `;
+
+        if (productsForItem.length > 0) {
+            productsForItem.forEach((productItem, idx) => {
+                const isCheapest = productItem.price === cheapestPrice;
+                const cardStyle = isCheapest
+                    ? 'border: 3px solid var(--primary-green); background: linear-gradient(135deg, #c6f6d5 0%, #d9f7e5 100%); box-shadow: 0 6px 20px rgba(56, 161, 105, 0.2);'
+                    : 'border: 2px solid var(--border-light); background: var(--bg-light-green);';
+
+                itemHtml += `
+                    <div style="flex: 0 0 280px; position: relative; ${cardStyle} border-radius: var(--radius-lg); padding: 20px; transition: all 0.3s ease;">
+                        ${isCheapest ? `
+                            <div style="position: absolute; top: -10px; right: 10px; background: var(--primary-green); color: white; padding: 4px 12px; border-radius: 20px; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; z-index: 10;">BEST PRICE</div>
+                            <div style="position: absolute; top: -10px; left: 10px; font-size: 24px; z-index: 10;">⭐</div>
+                        ` : ''}
+
+                        <!-- Product Image -->
+                        <div style="width: 100%; height: 180px; background: white; border-radius: var(--radius-md); margin-bottom: 16px; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+                            ${productItem.product.image_url ?
+                                `<img src="${productItem.product.image_url}" alt="${productItem.product.name}" style="max-width: 100%; max-height: 100%; object-fit: contain;" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                                <div style="display: none; font-size: 48px; color: var(--text-muted);">${getSupermarketEmoji(productItem.supermarket)}</div>` :
+                                `<div style="font-size: 48px; color: var(--text-muted);">${getSupermarketEmoji(productItem.supermarket)}</div>`
+                            }
+                        </div>
+
+                        <!-- Supermarket Name -->
+                        <div style="font-weight: 700; color: var(--text-primary); font-size: 16px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; text-align: center;">${productItem.supermarket}</div>
+
+                        <!-- Product Name -->
+                        <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px; text-align: center; min-height: 36px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;" title="${productItem.product.name}">${productItem.product.name}</div>
+
+                        <!-- Price -->
+                        <div style="font-size: 28px; font-weight: 800; color: ${isCheapest ? '#22543d' : 'var(--primary-green)'}; text-align: center; margin-bottom: 12px;">£${productItem.price.toFixed(2)}</div>
+
+                        <!-- View Product Link -->
+                        ${productItem.product.product_url ? `
+                            <a href="${productItem.product.product_url}" target="_blank" style="display: block; text-align: center; color: var(--primary-green); text-decoration: none; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; padding: 8px; background: white; border-radius: var(--radius-sm); border: 2px solid var(--primary-green-light); transition: all 0.2s ease;">
+                                View Product →
+                            </a>
+                        ` : ''}
+                    </div>
+                `;
+            });
+        } else {
+            itemHtml += `
+                <div style="flex: 0 0 280px; text-align: center; padding: 40px 20px; color: var(--text-muted); font-style: italic; background: var(--bg-light-green); border-radius: var(--radius-lg); border: 2px solid var(--border-light);">
+                    No products available
+                </div>
+            `;
+        }
+
+        itemHtml += `
+                        </div>
+                    </div>
+                    <style>
+                        #carousel-${itemIndex}::-webkit-scrollbar {
+                            height: 8px;
+                        }
+                        #carousel-${itemIndex}::-webkit-scrollbar-track {
+                            background: var(--bg-light-green);
+                            border-radius: 4px;
+                        }
+                        #carousel-${itemIndex}::-webkit-scrollbar-thumb {
+                            background: var(--primary-green-light);
+                            border-radius: 4px;
+                        }
+                        #carousel-${itemIndex}::-webkit-scrollbar-thumb:hover {
+                            background: var(--primary-green);
+                        }
+                    </style>
+                </div>
+            </div>
+        `;
+
+        itemsHtml += itemHtml;
+    }
+
+    grid.innerHTML = itemsHtml;
+
+        // Create summary
+        const supermarketsList = Object.keys(supermarketTotals);
+        let htmlSummary = '';
+        let cheapestTotal = Infinity;
+        let cheapestSupermarket = '';
+
+        for (const supermarket of supermarketsList) {
+            if (supermarketTotals[supermarket] > 0 && supermarketTotals[supermarket] < cheapestTotal) {
+                cheapestTotal = supermarketTotals[supermarket];
+                cheapestSupermarket = supermarket;
+            }
+        }
+
+        for (const supermarket of supermarketsList) {
+            const isCheapest = supermarket === cheapestSupermarket && supermarketTotals[supermarket] > 0;
+            const bgColor = isCheapest ? 'background: var(--primary-green-light); border: 2px solid var(--primary-green);' : 'background: var(--bg-white); border: 2px solid var(--border-light);';
+            const star = isCheapest ? ' ⭐' : '';
+
+            htmlSummary += `
+                <div style="${bgColor} border-radius: var(--radius-xl); padding: 20px; text-align: center; box-shadow: var(--shadow-sm);">
+                    <div style="font-size: 14px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px;">${supermarket} Total${star}</div>
+                    <div style="font-size: 28px; font-weight: 800; color: ${isCheapest ? 'var(--primary-green)' : 'var(--text-primary)'};">
+                        ${supermarketTotals[supermarket] > 0 ? '£' + supermarketTotals[supermarket].toFixed(2) : 'N/A'}
+                    </div>
+                </div>
+            `;
+        }
+
+        summary.innerHTML = htmlSummary;
+
+        loading.style.display = 'none';
+        content.style.display = 'block';
+
+    } catch (error) {
+        console.error('Error loading popular items:', error);
+        loading.innerHTML = `
+            <div style="text-align: center; padding: 40px; color: #DC2626;">
+                <div style="font-size: 48px; margin-bottom: 16px;">❌</div>
+                <div>Error loading popular items. Please make sure the database tables are set up correctly.</div>
+                <div style="font-size: 14px; margin-top: 12px; color: var(--text-muted);">${error.message}</div>
+            </div>
+        `;
+    }
+}
+
+// Helper function to get supermarket emojis
+function getSupermarketEmoji(supermarketName) {
+    const emojis = {
+        'ASDA': '🛒',
+        'Tesco': '🛍️',
+        'Sainsbury\'s': '🏪',
+        'Morrisons': '🏬',
+        'Aldi': '🛒'
+    };
+    return emojis[supermarketName] || '📦';
 }
 
 // Initialize on page load

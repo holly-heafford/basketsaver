@@ -1,59 +1,22 @@
 require('dotenv').config();
-const { createClient } = require('@supabase/supabase-js');
 const { scrapeSupermarket, SUPERMARKET_SELECTORS } = require('./scraper-stealth-template.js');
-const { normalizeProductName } = require('./normalizeProducts.js');
-const { mapToMainCategory } = require('./categoryMapping.js');
+const { addToPopularItemsIfMatches } = require('./add-to-popular-items.js');
+const {
+  supabase,
+  upsertProduct,
+  getOrCreateCategory,
+  getOrCreateSupermarket,
+  logScrape
+} = require('./supabase-utils.js');
+const { scrapeAsdaCategories } = require('./scrapeAsdaCategories.js');
+const { scrapeTescoCategories } = require('./scrapeTescoCategories.js');
+const { scrapeSainsburysCategories } = require('./scrapeSainsburysCategories.js');
 
-// Initialize Supabase client
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY // Use service key for write access
-);
 
-/**
- * Get or create a category by name
- * Returns the category_id
- * Note: Categories are shared across all supermarkets
- */
-async function getOrCreateCategory(categoryName) {
-  try {
-    // First, try to find existing category
-    const { data: existing } = await supabase
-      .from('categories')
-      .select('id')
-      .eq('name', categoryName)
-      .single();
 
-    if (existing) {
-      return existing.id;
-    }
+// upsertProduct function now imported from supabase-utils.js
 
-    // Category doesn't exist, create it
-    const { data: newCategory, error } = await supabase
-      .from('categories')
-      .insert({
-        name: categoryName
-      })
-      .select('id')
-      .single();
-
-    if (error) throw error;
-
-    return newCategory.id;
-
-  } catch (error) {
-    console.error(`Error getting/creating category "${categoryName}":`, error.message);
-    return null;
-  }
-}
-
-/**
- * Upsert (insert or update) a product in Supabase
- * @param {string} supermarketName - Name of the supermarket
- * @param {object} productData - Product data including name, price, url
- * @param {string} categoryName - Optional category name to assign to the product
- */
-async function upsertProduct(supermarketName, productData, categoryName = null) {
+// Removed duplicate function definition
   try {
     // Get supermarket ID
     const { data: supermarket } = await supabase
@@ -82,7 +45,9 @@ async function upsertProduct(supermarketName, productData, categoryName = null) 
     const price = parseFloat(productData.price.replace('£', '').replace(',', ''));
 
     // Normalize product name
-    const { normalizedName, tags } = normalizeProductName(productData.name);
+    const normalized = normalizeProductName(productData.name);
+    const normalizedName = normalized.normalizedName;
+    const tags = normalized.tags || [];
 
     // Get category ID if category name was provided
     let categoryId = null;
@@ -147,6 +112,14 @@ async function upsertProduct(supermarketName, productData, categoryName = null) 
           price: price,
           recorded_at: new Date().toISOString()
         });
+
+      // Check if this product matches any popular items
+      await addToPopularItemsIfMatches(
+        data.id,
+        productData.name,
+        productData.url,
+        productData.imageUrl
+      );
 
       return { ...data, action: 'inserted' };
     }
@@ -398,7 +371,37 @@ async function scrapeSearchTermToSupabase(supermarketName, searchTerm, maxProduc
 }
 
 /**
- * Test scraper with a few products
+ * Scrape all categories for a supermarket using Excel-based category data
+ */
+async function scrapeAllCategories(supermarketName) {
+  console.log(`\n=== Starting comprehensive category scraping for ${supermarketName.toUpperCase()} ===\n`);
+
+  if (supermarketName.toLowerCase() === 'asda') {
+    return await scrapeAsdaCategories();
+  } else if (supermarketName.toLowerCase() === 'tesco') {
+    return await scrapeTescoCategories();
+  } else if (supermarketName.toLowerCase() === 'sainsburys') {
+    return await scrapeSainsburysCategories();
+  } else {
+    console.log(`Category scraping not yet implemented for ${supermarketName}`);
+    console.log(`Using search-based scraping instead...`);
+
+    // Fallback to search-based scraping for popular terms
+    const popularSearchTerms = ['milk', 'bread', 'eggs', 'cheese', 'chicken', 'beef', 'pasta', 'baked beans'];
+
+    for (const term of popularSearchTerms) {
+      try {
+        await scrapeSearchTermToSupabase(supermarketName, term, 20);
+        await new Promise(resolve => setTimeout(resolve, 3000)); // Delay between searches
+      } catch (error) {
+        console.error(`Error scraping ${term} from ${supermarketName}:`, error.message);
+      }
+    }
+  }
+}
+
+/**
+ * Test scraper with a few products or run comprehensive scraping
  */
 async function testScraper() {
   // Check if env vars are set
@@ -420,8 +423,51 @@ async function testScraper() {
   console.log(`✓ Connected to Supabase`);
   console.log(`✓ Found ${data.length} supermarkets in database`);
 
-  // Test scraping a few products from Asda
-  await scrapeSearchTermToSupabase('asda', 'coca cola', 5);
+  // Check command line arguments
+  const args = process.argv.slice(2);
+
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`
+Usage: node scrapeToSupabase.js [options] [supermarket]
+
+Options:
+  --categories, -c    Scrape all categories using Excel data (ASDA/Tesco/Sainsburys)
+  --search <term>     Scrape specific search term
+  --test              Run quick test (default)
+  --help, -h          Show this help
+
+Examples:
+  node scrapeToSupabase.js --test                       # Quick test
+  node scrapeToSupabase.js --categories asda            # Full ASDA category scraping
+  node scrapeToSupabase.js --categories tesco           # Full Tesco category scraping
+  node scrapeToSupabase.js --categories sainsburys      # Full Sainsburys category scraping
+  node scrapeToSupabase.js --search "coca cola" asda    # Search for coca cola at ASDA
+`);
+    return;
+  }
+
+  if (args.includes('--categories') || args.includes('-c')) {
+    const supermarket = args[args.length - 1];
+    if (!supermarket || supermarket.startsWith('--')) {
+      console.error('Please specify a supermarket: asda, tesco, etc.');
+      return;
+    }
+    await scrapeAllCategories(supermarket);
+  } else if (args.includes('--search')) {
+    const searchIndex = args.indexOf('--search');
+    const searchTerm = args[searchIndex + 1];
+    const supermarket = args[searchIndex + 2] || 'asda';
+
+    if (!searchTerm) {
+      console.error('Please specify a search term after --search');
+      return;
+    }
+
+    await scrapeSearchTermToSupabase(supermarket, searchTerm, 20);
+  } else {
+    // Default test - scrape a few products from Asda
+    await scrapeSearchTermToSupabase('asda', 'coca cola', 5);
+  }
 }
 
 // Run test if executed directly
@@ -433,5 +479,6 @@ module.exports = {
   upsertProduct,
   getOrCreateCategory,
   scrapeSearchTermToSupabase,
+  scrapeAllCategories,
   logScrape
 };

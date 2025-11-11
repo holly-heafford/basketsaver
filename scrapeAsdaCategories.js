@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { upsertProduct } = require('./scrapeToSupabase.js');
+const { upsertProduct } = require('./supabase-utils.js');
 const { scrapeSupermarket, SUPERMARKET_SELECTORS } = require('./scraper-stealth-template.js');
 const stealth = require('./stealth.js');
 const XLSX = require('xlsx');

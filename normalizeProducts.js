@@ -97,11 +97,28 @@ function normalizeProductName(productName) {
         normalized = normalized.replace(regex, '');
     }
 
+    // Step 1.5: Protect important geographic/brand terms before removing filler words
+    // Replace them with placeholders to prevent removal
+    const protectedTerms = {
+        'new zealand': '___NEW_ZEALAND___',
+        'new york': '___NEW_YORK___'
+    };
+
+    for (const [term, placeholder] of Object.entries(protectedTerms)) {
+        const regex = new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+        normalized = normalized.replace(regex, placeholder);
+    }
+
     // Step 2: Remove marketing filler words (sort by length descending)
     const sortedFillers = [...FILLER_WORDS].sort((a, b) => b.length - a.length);
     for (const filler of sortedFillers) {
         const regex = new RegExp(`\\b${filler.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
         normalized = normalized.replace(regex, '');
+    }
+
+    // Step 2.1: Restore protected terms
+    for (const [term, placeholder] of Object.entries(protectedTerms)) {
+        normalized = normalized.replace(new RegExp(placeholder, 'gi'), term);
     }
 
     // Step 2.5: Clean up orphaned conjunctions and prepositions left behind after removing brand names
