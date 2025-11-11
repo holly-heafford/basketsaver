@@ -207,6 +207,7 @@ async function scrapeAsda(maxProductsPerCategory = 999999) {
     const stealthArgs = stealth.getStealthLaunchArgs();
 
     browser = await puppeteer.launch({
+	executablePath: '/usr/bin/chromium-browser',
       headless: 'new',
       args: stealthArgs
     });
