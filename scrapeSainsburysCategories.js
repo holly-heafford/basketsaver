@@ -250,6 +250,7 @@ async function scrapeSainsburysCategories() {
   console.log('🎯 Categories reordered by priority for popular items detection:');
 
   const browser = await puppeteer.launch({
+	executablePath: '/usr/bin/chromium-browser',
     headless: 'new',
     args: [
       '--no-sandbox',
@@ -258,6 +259,9 @@ async function scrapeSainsburysCategories() {
       '--disable-dev-shm-usage',
       '--disable-web-security',
       '--disable-features=IsolateOrigins,site-per-process'
+	'--disable-gpu',
+    '--window-size=1920,1080',
+    '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     ]
   });
 
@@ -413,14 +417,18 @@ if (require.main === module) {
 
       // Set up browser with same configuration as main function
       const browser = await puppeteer.launch({
-        headless: 'new',
+        executablePath: '/usr/bin/chromium-browser',
+	headless: 'new',
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
           '--disable-blink-features=AutomationControlled',
           '--disable-dev-shm-usage',
           '--disable-web-security',
-          '--disable-features=IsolateOrigins,site-per-process'
+          '--disable-features=IsolateOrigins,site-per-process',
+	'--disable-gpu',
+    '--window-size=1920,1080',
+    '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         ]
       });
 
