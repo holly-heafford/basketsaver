@@ -109,13 +109,31 @@ async function getProductsFromCategory(page, categoryUrl, isFirstCategory = fals
       // Extract product URLs from this page - try multiple selectors for Sainsburys
       const productUrls = await page.evaluate(() => {
         const selectors = [
-          'a[href*="/gol-ui/product/"]',
-          'a[href*="/shop/gb/groceries/"]',
-          '[data-testid="product-tile"] a',
-          '.product-tile a',
-          'a[data-test-id*="product"]',
-          '.ln-o-grid__item a[href*="/product/"]'
-        ];
+    'a[href*="/gol-ui/product/"]',   // Primary product link selector
+    '[data-testid="product-tile"] a[href*="/product/"]',  // Product tile links
+    '.product-tile a[href*="/product/"]',  // Alternative product tiles
+    'a[data-test-id*="product"][href*="/product/"]',  // Data test ID links
+    '.ln-o-grid__item a[href*="/gol-ui/product/"]'  // Grid item links
+  ];
+
+  const links = new Set();
+
+  selectors.forEach(selector => {
+    document.querySelectorAll(selector).forEach(link => {
+      const href = link.getAttribute('href');
+      // Only include links that have "/product/" in them (actual products, not categories)
+      if (href && (href.includes('/gol-ui/product/') || href.includes('/product/'))) {
+        const fullUrl = href.startsWith('http') ? href : `https://www.sainsburys.co.uk${href}`;
+        // Extra check: make sure it's not a category page
+        if (!fullUrl.includes('/groceries/') || fullUrl.includes('/product/')) {
+          links.add(fullUrl);
+        }
+      }
+    });
+  });
+
+  return Array.from(links);
+});
 
         let urls = [];
 
