@@ -10,6 +10,7 @@ puppeteer.use(StealthPlugin());
  */
 async function scrapeSupermarket(url, selectors) {
   const browser = await puppeteer.launch({
+    executablePath: '/usr/bin/chromium-browser',
     headless: 'new', // Use new headless mode (more stable)
     args: [
       '--no-sandbox',
@@ -17,7 +18,10 @@ async function scrapeSupermarket(url, selectors) {
       '--disable-blink-features=AutomationControlled', // Hide automation
       '--disable-dev-shm-usage',
       '--disable-web-security',
-      '--disable-features=IsolateOrigins,site-per-process'
+      '--disable-features=IsolateOrigins,site-per-process',
+      '--disable-gpu',
+      '--window-size=1920,1080',
+      '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     ]
   });
 
