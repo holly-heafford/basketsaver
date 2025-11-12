@@ -133,22 +133,7 @@ async function getProductsFromCategory(page, categoryUrl, isFirstCategory = fals
   });
 
   return Array.from(links);
-});
-
-        let urls = [];
-
-        for (const selector of selectors) {
-          const links = document.querySelectorAll(selector);
-          links.forEach(link => {
-            if (link.href && (link.href.includes('/product/') || link.href.includes('/gol-ui/') || link.href.includes('/groceries/'))) {
-              urls.push(link.href);
-            }
-          });
-          if (urls.length > 0) break; // Found products with this selector
-        }
-
-        return [...new Set(urls)]; // Remove duplicates
-      });
+})
 
       if (productUrls.length === 0) {
         // No products found, we've reached the end
